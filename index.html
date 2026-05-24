@@ -1277,6 +1277,103 @@
     .nb-donut-wrap { grid-template-columns: 1fr; }
     .nb-donut-canvas-wrap { width: 120px; height: 120px; margin: 0 auto; }
   }
+
+  /* ===== AUTOCOMPLETE ===== */
+  .ac-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 80px;
+  }
+  .ac-wrap input {
+    width: 100%;
+    height: 36px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-family: 'Sarabun', sans-serif;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text1);
+  }
+  .ac-wrap input:focus { outline: none; border-color: #AAA; }
+  .ac-wrap input::placeholder { color: var(--text3); }
+  .ac-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0; right: 0;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 20px rgba(0,0,0,.12);
+    z-index: 999;
+    overflow: hidden;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .ac-dropdown.open { display: block; }
+  .ac-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    cursor: pointer;
+    gap: 8px;
+    border-bottom: 1px solid var(--border2);
+    transition: background .1s;
+    /* touch-friendly: min height */
+    min-height: 48px;
+  }
+  .ac-item:last-child { border-bottom: none; }
+  .ac-item:hover, .ac-item.highlighted { background: var(--bg3); }
+  .ac-item-left {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    overflow: hidden;
+  }
+  .ac-item-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ac-item-name mark {
+    background: #FEF08A;
+    color: var(--text1);
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+  [data-theme="dark"] .ac-item-name mark { background: #713F12; color: #FEF9C3; }
+  .ac-item-sub {
+    font-size: 11px;
+    color: var(--text3);
+  }
+  .ac-item-amt {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text2);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .ac-item-freq {
+    font-size: 10px;
+    color: var(--text3);
+    background: var(--bg3);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .ac-empty {
+    padding: 12px;
+    font-size: 13px;
+    color: var(--text3);
+    text-align: center;
+  }
 </style>
 </head>
 <body>
@@ -1393,7 +1490,11 @@
       <select id="inc-day" class="day-sel"></select>
       <select id="inc-cat">
       </select>
-      <input type="text" id="inc-name" placeholder="รายการ..." />
+      <div class="ac-wrap">
+        <input type="text" id="inc-name" placeholder="รายการ..." autocomplete="off"
+          oninput="acInput('income')" onkeydown="acKeydown(event,'income')" onfocus="acInput('income')" onblur="acBlur('income')" />
+        <div class="ac-dropdown" id="ac-income"></div>
+      </div>
       <input type="number" id="inc-amt" class="amt-input" placeholder="จำนวนเงิน" min="0" />
       <button class="add-btn" id="inc-add-btn" onclick="submitEntry('income')">+ เพิ่ม</button>
       <button class="cancel-btn" id="inc-cancel-btn" onclick="cancelEdit('income')">ยกเลิก</button>
@@ -1410,7 +1511,11 @@
       <select id="exp-day" class="day-sel"></select>
       <select id="exp-cat">
       </select>
-      <input type="text" id="exp-name" placeholder="รายการ..." />
+      <div class="ac-wrap">
+        <input type="text" id="exp-name" placeholder="รายการ..." autocomplete="off"
+          oninput="acInput('expense')" onkeydown="acKeydown(event,'expense')" onfocus="acInput('expense')" onblur="acBlur('expense')" />
+        <div class="ac-dropdown" id="ac-expense"></div>
+      </div>
       <input type="number" id="exp-amt" class="amt-input" placeholder="จำนวนเงิน" min="0" />
       <button class="add-btn" id="exp-add-btn" onclick="submitEntry('expense')">+ เพิ่ม</button>
       <button class="cancel-btn" id="exp-cancel-btn" onclick="cancelEdit('expense')">ยกเลิก</button>
@@ -3158,6 +3263,141 @@ function nbSetActual(dayIdx, itemIdx, val) {
 function nbInit() {
   nbLoad();
 }
+
+/* ========================================================
+   SMART AUTOCOMPLETE
+======================================================== */
+let acHighlight = { income: -1, expense: -1 };
+let acResults  = { income: [], expense: [] };
+let acBlurTimer = { income: null, expense: null };
+
+/** Collect all historical entries across every saved month */
+function acGetHistory(type) {
+  const map = {}; // key = name.lower → { name, cat, amount, count, lastAmt }
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith('inc_exp:')) continue;
+    try {
+      const d = JSON.parse(localStorage.getItem(k));
+      const list = (d && d[type]) || [];
+      list.forEach(e => {
+        const key = e.name.toLowerCase();
+        if (!map[key]) map[key] = { name: e.name, cat: e.cat, lastAmt: e.amount, count: 0 };
+        map[key].count++;
+        map[key].lastAmt = e.amount; // keep most recent
+      });
+    } catch(_) {}
+  }
+  // Also include current month data
+  (data[type] || []).forEach(e => {
+    const key = e.name.toLowerCase();
+    if (!map[key]) map[key] = { name: e.name, cat: e.cat, lastAmt: e.amount, count: 0 };
+    map[key].count++;
+    map[key].lastAmt = e.amount;
+  });
+  return Object.values(map);
+}
+
+function acInput(type) {
+  const inputEl = document.getElementById(type === 'income' ? 'inc-name' : 'exp-name');
+  const dropEl  = document.getElementById('ac-' + type);
+  const q = inputEl.value.trim().toLowerCase();
+
+  const history = acGetHistory(type);
+
+  let results;
+  if (q.length === 0) {
+    // Show most frequent when field is empty/focused
+    results = history
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+  } else {
+    // Filter: starts-with first, then contains
+    const sw = history.filter(h => h.name.toLowerCase().startsWith(q));
+    const ct = history.filter(h => !h.name.toLowerCase().startsWith(q) && h.name.toLowerCase().includes(q));
+    results = [...sw, ...ct].slice(0, 7);
+  }
+
+  acResults[type] = results;
+  acHighlight[type] = -1;
+  acRender(type, q);
+}
+
+function acRender(type, q) {
+  const dropEl  = document.getElementById('ac-' + type);
+  const results = acResults[type];
+
+  if (results.length === 0) {
+    dropEl.classList.remove('open');
+    return;
+  }
+
+  dropEl.innerHTML = results.map((r, i) => {
+    const hiName = q
+      ? r.name.replace(new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'),
+          '<mark>$1</mark>')
+      : r.name;
+    return `<div class="ac-item${acHighlight[type] === i ? ' highlighted' : ''}"
+      onmousedown="acPick('${type}',${i})"
+      ontouchstart="acPick('${type}',${i})">
+        <div class="ac-item-left">
+          <span class="ac-item-name">${hiName}</span>
+          <span class="ac-item-sub">${r.cat}</span>
+        </div>
+        <span class="ac-item-freq">${r.count}×</span>
+        <span class="ac-item-amt">฿${Math.round(r.lastAmt).toLocaleString('th-TH')}</span>
+      </div>`;
+  }).join('');
+
+  dropEl.classList.add('open');
+}
+
+function acPick(type, idx) {
+  const item = acResults[type][idx];
+  if (!item) return;
+  const prefix  = type === 'income' ? 'inc' : 'exp';
+  document.getElementById(prefix + '-name').value = item.name;
+  document.getElementById(prefix + '-amt').value  = item.lastAmt;
+  // Set category
+  const catSel = document.getElementById(prefix + '-cat');
+  if ([...catSel.options].some(o => o.value === item.cat)) catSel.value = item.cat;
+  acClose(type);
+  // Focus amount so user can confirm / change quickly
+  document.getElementById(prefix + '-amt').focus();
+  document.getElementById(prefix + '-amt').select();
+}
+
+function acClose(type) {
+  document.getElementById('ac-' + type).classList.remove('open');
+  acHighlight[type] = -1;
+}
+
+function acBlur(type) {
+  // Delay so mousedown/touchstart on item fires first
+  acBlurTimer[type] = setTimeout(() => acClose(type), 200);
+}
+
+function acKeydown(e, type) {
+  const drop = document.getElementById('ac-' + type);
+  if (!drop.classList.contains('open')) return;
+  const items = acResults[type];
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    acHighlight[type] = Math.min(acHighlight[type] + 1, items.length - 1);
+    acRender(type, document.getElementById(type === 'income' ? 'inc-name' : 'exp-name').value.toLowerCase());
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    acHighlight[type] = Math.max(acHighlight[type] - 1, -1);
+    acRender(type, document.getElementById(type === 'income' ? 'inc-name' : 'exp-name').value.toLowerCase());
+  } else if (e.key === 'Enter' && acHighlight[type] >= 0) {
+    e.preventDefault();
+    acPick(type, acHighlight[type]);
+  } else if (e.key === 'Escape') {
+    acClose(type);
+  }
+}
+
+/* ---- END AUTOCOMPLETE ---- */
 
 /* ========================================================
    START

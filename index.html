@@ -1454,30 +1454,23 @@
   <!-- ===== TAB: MAIN ===== -->
   <div class="tab-panel active" id="tab-main">
 
-  <div class="cumulative-banner">
-    <div class="cum-card cum-card-bal">
-      <div class="cum-label cum-label-bal">ยอดเงินสะสม</div>
-      <div class="cum-value cum-value-bal" id="cum-bal">฿0</div>
-      <div class="cum-sub cum-sub-bal" id="cum-bal-sub">รวมทุกเดือน</div>
-    </div>
-    <div class="cum-card cum-card-exp">
-      <div class="cum-label cum-label-exp">รายจ่ายสะสม</div>
-      <div class="cum-value cum-value-exp" id="cum-exp">฿0</div>
-      <div class="cum-sub cum-sub-exp" id="cum-exp-sub">รวมทุกเดือน</div>
+  <div class="summary-grid" id="carry-fwd-row" style="display:none">
+    <div class="metric" style="grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:.75rem 1rem">
+      <div class="metric-label" style="margin:0">↩ ยอดยกมาจากเดือนก่อน</div>
+      <div class="metric-value pos" id="carry-fwd" style="font-size:17px">฿0</div>
     </div>
   </div>
-
   <div class="summary-grid">
     <div class="metric">
-      <div class="metric-label">รายรับ</div>
+      <div class="metric-label">รายรับเดือนนี้</div>
       <div class="metric-value inc" id="total-inc">฿0</div>
     </div>
     <div class="metric">
-      <div class="metric-label">รายจ่าย</div>
+      <div class="metric-label">รายจ่ายเดือนนี้</div>
       <div class="metric-value exp" id="total-exp">฿0</div>
     </div>
     <div class="metric">
-      <div class="metric-label">คงเหลือ</div>
+      <div class="metric-label">คงเหลือรวม</div>
       <div class="metric-value pos" id="balance">฿0</div>
     </div>
   </div>
@@ -1544,6 +1537,28 @@
 
   <!-- ===== TAB: ANALYTICS ===== -->
   <div class="tab-panel" id="tab-analytics">
+
+    <!-- 0. Cumulative summary -->
+    <div class="ana-section">
+      <div class="ana-title"><span>💰</span> ยอดสะสมทั้งหมด</div>
+      <div class="summary-grid" style="margin-bottom:0">
+        <div class="metric">
+          <div class="metric-label">รายรับสะสม</div>
+          <div class="metric-value inc" id="cum-inc">฿0</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px" id="cum-inc-sub">รวมทุกเดือน</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">รายจ่ายสะสม</div>
+          <div class="metric-value exp" id="cum-exp">฿0</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px" id="cum-exp-sub">รวมทุกเดือน</div>
+        </div>
+        <div class="metric" style="grid-column:1/-1">
+          <div class="metric-label">ยอดเงินสะสม</div>
+          <div class="metric-value pos" id="cum-bal">฿0</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px" id="cum-bal-sub">รวมทุกเดือน</div>
+        </div>
+      </div>
+    </div>
 
     <!-- 1. Trend: Bar/Line chart monthly -->
     <div class="ana-section">
@@ -1930,6 +1945,13 @@ function init() {
   const now = new Date();
   const sel = document.getElementById('month-sel');
   const opts = [];
+  // Add 3 future months first (newest at top)
+  for (let i = 3; i >= 1; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const k = getMonthKey(d.getFullYear(), d.getMonth());
+    opts.push({ key: k, label: MONTHS_TH[d.getMonth()] + ' ' + (d.getFullYear() + 543) + ' (ล่วงหน้า)' });
+  }
+  // Current month + 12 past months
   for (let i = 0; i < 13; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const k = getMonthKey(d.getFullYear(), d.getMonth());
@@ -1940,7 +1962,8 @@ function init() {
     op.value = o.key; op.textContent = o.label;
     sel.appendChild(op);
   });
-  currentKey = opts[0].key;
+  // Default to current month (index 3 after 3 future months)
+  currentKey = opts[3].key;
   loadMonth(currentKey);
   renderPills();
 }
@@ -2073,10 +2096,39 @@ function removeEntry(type, id) {
 /* ========================================================
    RENDER
 ======================================================== */
+
+/** คำนวณยอดคงเหลือสะสมจากทุกเดือนก่อนหน้า currentKey */
+function getPrevMonthBalance(key) {
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith('inc_exp:')) continue;
+    if (k >= key) continue; // เอาเฉพาะเดือนก่อนหน้า
+    try {
+      const d = JSON.parse(localStorage.getItem(k));
+      if (!d) continue;
+      const inc = (d.income || []).reduce((s, e) => s + e.amount, 0);
+      const exp = (d.expense || []).reduce((s, e) => s + e.amount, 0);
+      total += inc - exp;
+    } catch(_) {}
+  }
+  return total;
+}
+
 function renderAll() {
   const ti = data.income.reduce((s, e) => s + e.amount, 0);
   const te = data.expense.reduce((s, e) => s + e.amount, 0);
-  const bal = ti - te;
+  const prevBal = getPrevMonthBalance(currentKey);
+  const bal = prevBal + ti - te;
+
+  // ยอดยกมา
+  const carryEl = document.getElementById('carry-fwd');
+  const carryRow = document.getElementById('carry-fwd-row');
+  if (carryEl && carryRow) {
+    carryEl.textContent = fmtMasked(prevBal);
+    carryEl.className = 'metric-value ' + (prevBal >= 0 ? 'pos' : 'neg');
+    carryRow.style.display = prevBal !== 0 ? '' : 'none';
+  }
 
   document.getElementById('total-inc').textContent = fmtMasked(ti);
   document.getElementById('total-exp').textContent = fmtMasked(te);
@@ -2214,22 +2266,35 @@ function renderList(type) {
 function renderCumulative() {
   const keys = getAllKeys();
   const allSet = new Set([...keys, currentKey]);
-  let totalBal = 0, totalExp = 0, monthCount = 0;
+  let totalBal = 0, totalExp = 0, totalInc = 0, monthCount = 0;
   allSet.forEach(k => {
     try {
       let d = k === currentKey ? data : JSON.parse(localStorage.getItem(k));
       if (!d) return;
       const inc = (d.income || []).reduce((s, e) => s + e.amount, 0);
       const exp = (d.expense || []).reduce((s, e) => s + e.amount, 0);
-      if (inc > 0 || exp > 0) { totalBal += inc - exp; totalExp += exp; monthCount++; }
+      if (inc > 0 || exp > 0) { totalInc += inc; totalBal += inc - exp; totalExp += exp; monthCount++; }
     } catch (e) {}
   });
-  document.getElementById('cum-bal').textContent = fmtMasked(totalBal);
-  document.getElementById('cum-bal').className = 'cum-value ' + (totalBal >= 0 ? 'cum-value-bal' : 'cum-value-exp');
-  document.getElementById('cum-exp').textContent = fmtMasked(totalExp);
   const sub = monthCount > 0 ? monthCount + ' เดือน' : 'รวมทุกเดือน';
-  document.getElementById('cum-bal-sub').textContent = sub;
-  document.getElementById('cum-exp-sub').textContent = sub;
+
+  const cumInc = document.getElementById('cum-inc');
+  if (cumInc) { cumInc.textContent = fmtMasked(totalInc); }
+  const cumIncSub = document.getElementById('cum-inc-sub');
+  if (cumIncSub) cumIncSub.textContent = sub;
+
+  const cumExp = document.getElementById('cum-exp');
+  if (cumExp) { cumExp.textContent = fmtMasked(totalExp); }
+  const cumExpSub = document.getElementById('cum-exp-sub');
+  if (cumExpSub) cumExpSub.textContent = sub;
+
+  const cumBal = document.getElementById('cum-bal');
+  if (cumBal) {
+    cumBal.textContent = fmtMasked(totalBal);
+    cumBal.className = 'metric-value ' + (totalBal >= 0 ? 'pos' : 'neg');
+  }
+  const cumBalSub = document.getElementById('cum-bal-sub');
+  if (cumBalSub) cumBalSub.textContent = sub;
 }
 
 function renderPills() {
